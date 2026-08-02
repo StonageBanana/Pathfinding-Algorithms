@@ -1,150 +1,108 @@
-# Pathfinding Algorithms Visualization
+# Pathfinding: Classical Search vs. Reinforcement Learning vs. Sampling-Based Planners
 
-A comprehensive Python implementation and visualization of various pathfinding algorithms using Pygame. This project demonstrates how different algorithms find paths between points on a grid, with customizable obstacles and real-time visualization.
+**One interface, twelve planners, one interactive grid — so you can watch the difference instead of reading about it.**
 
-![Pathfinding Algorithms](https://img.shields.io/badge/Pathfinding-Algorithms-blue)
-![Python](https://img.shields.io/badge/Python-3.6%2B-green)
-![Pygame](https://img.shields.io/badge/Pygame-2.0%2B-orange)
+![Python](https://img.shields.io/badge/python-3.10+-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-DQN-ee4c2c)
+![Pygame](https://img.shields.io/badge/Pygame-visualization-green)
 
-## 🚀 Features
+---
 
-- **Multiple Algorithms**: Implementations of 7 different pathfinding algorithms
-- **Interactive Grid**: Click to place start/end points and obstacles
-- **Real-time Visualization**: Watch algorithms explore the grid step by step
-- **Performance Metrics**: Compare algorithm efficiency and path length
-- **Customizable Settings**: Adjust grid size, animation speed, and more
+## What this is
 
-## 📋 Implemented Algorithms
+Three families of algorithms solve the same problem — get from A to B through obstacles — with completely different assumptions:
 
-| Algorithm | Guaranteed Shortest Path | Weighted | Use Case |
-|-----------|-------------------------|----------|----------|
-| **A*** Search | ✅ | ✅ | Optimal pathfinding with heuristics |
-| **Dijkstra's Algorithm** | ✅ | ✅ | General purpose shortest path |
-| **Breadth-First Search (BFS)** | ✅ | ❌ | Unweighted graphs, few obstacles |
-| **Depth-First Search (DFS)** | ❌ | ❌ | Maze exploration, not optimal |
-| **Greedy Best-First Search** | ❌ | ❌ | Fast but suboptimal |
-| **Bidirectional Search** | ✅ | ❌ | Faster search from both ends |
-| **Jump Point Search** | ✅ | ✅ | Optimized for uniform-cost grids |
+- **Classical search** knows the map and guarantees optimality
+- **Reinforcement learning** knows nothing and has to learn the map by falling over
+- **Sampling-based planners** don't try to be optimal, they try to be fast in high-dimensional space
 
-## 🛠️ Installation
+This repository implements all three behind a **single abstract interface**, then renders them on the same interactive grid so their behaviour is directly comparable. Watching Dijkstra flood outward while A\* drives straight at the goal, or watching a DQN spend thousands of episodes rediscovering what BFS knew immediately, makes the tradeoffs obvious in a way a complexity table doesn't.
 
-### Prerequisites
-- Python 3.6 or higher
-- Pygame library
+---
 
-### Setup
-1. Clone the repository:
-```
-git clone https://github.com/StonageBanana/Pathfinding-Algorithms.git
-cd Pathfinding-Algorithms
+## Architecture
+
+Every planner subclasses one abstract base class:
+
+```python
+class PathPlanningAlgorithm(ABC):
+    @abstractmethod
+    def run(self) -> None: ...
+    @abstractmethod
+    def extract_path(self) -> List[Tuple[int, int]]: ...
 ```
 
-2. Install required dependencies:
+That constraint is the design point. A tabular Q-learner, a priority-queue graph search, and a randomised tree planner have nothing in common internally — forcing them behind `run()` / `extract_path()` means the visualizer and benchmarking harness treat them identically, and adding a new planner requires touching exactly one new file.
+
+Code is fully type-hinted with Doxygen-style docstrings throughout.
+
+---
+
+## Implemented planners
+
+**Classical search** — A\* (Manhattan-distance heuristic), Dijkstra's, BFS, DFS, Greedy Best-First, Bidirectional Search, Jump Point Search
+
+**Reinforcement learning** — Q-Learning, SARSA, Deep Q-Network
+
+**Sampling-based** — RRT, RRT\*
+
+### The DQN is a real one
+
+Not a wrapper around a library call. `DQN.py` implements from scratch:
+
+- Experience replay buffer (`collections.deque`) to break sample correlation
+- A **separate target network**, periodically synced — without it the Bellman targets chase the network that's producing them and training diverges
+- ε-greedy exploration with decay schedule
+- MSE loss on the Bellman residual
+- Automatic CUDA/CPU device handling
+
+State is `(x, y)` into a 128–128 MLP. That's deliberately minimal — the goal was a correct, readable DQN sitting next to tabular SARSA and Q-Learning for comparison, not a competitive agent.
+
+### What the comparison shows
+
+- **A\* vs Dijkstra** — same guarantee, dramatically different node expansion once a heuristic is admissible
+- **Greedy Best-First** — fast, and confidently wrong on concave obstacles
+- **Q-Learning vs SARSA** — off-policy vs on-policy divergence shows up clearly near hazards; SARSA takes the safer path
+- **RRT vs RRT\*** — RRT finds *a* path fast; RRT\* rewires toward optimality and you can watch it happen
+- **RL vs classical** — the RL agents eventually match paths that A\* found instantly, which is exactly the point: they got there without ever being told the map
+
+---
+
+## Interactive visualization
+
+Real-time Pygame grid:
+
+- Click to place start, goal, and obstacles
+- Adjustable animation speed to step through expansion
+- Random maze generation for repeatable comparisons
+- Live rendering of the frontier / explored set / final path
+
+---
+
+## Layout
+
 ```
-pip install pygame
-```
-
-## 🎮 How to Use
-1. Run the application:
-```
-python main.py
-```
-
-2. Controls:
-Left Click: Place start point (green), end point (red), or obstacles (black)
-Right Click: Remove nodes
-Spacebar: Start the selected algorithm
-C: Clear the current path and reset
-R: Generate random maze
-1-7: Select different algorithms
-+/−: Adjust visualization speed
-
-3. Algorithm Selection:
-Press number keys 1-7 to switch between algorithms
-Watch the visualization to understand how each algorithm works
-
-## 📊 Algorithm Details
-### A* Search
-* Type: Informed search
-* Heuristic: Manhattan distance
-* Best for: Most pathfinding scenarios
-* Complexity: O(b^d) with good heuristic
-
-### Dijkstra's Algorithm
-* Type: Uninformed search
-* Approach: Explores all directions equally
-* Best for: Weighted graphs
-* Complexity: O((V+E) log V)
-
-### Breadth-First Search (BFS)
-* Type: Uninformed search
-* Approach: Explores neighbors first
-* Best for: Unweighted graphs
-* Complexity: O(V+E)
-
-### Depth-First Search (DFS)
-* Type: Uninformed search
-* Approach: Explores depth first
-* Note: Doesn't guarantee shortest path
-* Complexity: O(V+E)
-
-### Greedy Best-First Search
-* Type: Informed search
-* Approach: Always moves toward goal
-* Note: Can get stuck in local minima
-* Complexity: O(b^m)
-
-### Bidirectional Search
-* Type: Uninformed search
-* Approach: Searches from both start and end
-* Best for: Large grids
-* Complexity: O(b^(d/2))
-
-### Jump Point Search
-* Type: Optimized A*
-* Approach: Skips symmetric paths
-* Best for: Uniform cost grids
-* Complexity: O(b^d) but faster in practice
-
-## 🎨 Color Scheme
-* Green: Start node
-* Red: End node
-* Black: Obstacle/Wall
-* Blue: Visited nodes
-* Light Blue: Nodes in frontier
-* Yellow: Final path
-* White: Empty space
-
-## 📁 Project Structure
-```text
-Pathfinding-Algorithms/
-├── main.py              # Main application file
-├── algorithms/          # Algorithm implementations
-│   ├── a_star.py
-│   ├── dijkstra.py
-│   ├── bfs.py
-│   ├── dfs.py
-│   ├── greedy_bfs.py
-│   ├── bidirectional.py
-│   └── jump_point.py
-├── components/          # UI and grid components
-│   ├── grid.py
-│   └── button.py
-└── utils/              # Utility functions
-    ├── constants.py
-    └── helpers.py
+A_star.py          Dijkstras.py       QLearning.py
+SARSA.py           DQN.py             RRT.py
+RRT_star.py        Algorithms/        Maps/
+Output/
 ```
 
-## 🔧 Customization
-You can easily modify the project by:
-1. Changing grid size: Edit GRID_WIDTH and GRID_HEIGHT in constants
-2. Adding new algorithms: Create new files in the algorithms/ directory
-3. Modifying colors: Update color constants in the configuration
-4. Adjusting heuristics: Modify heuristic functions in A* and Greedy BFS
+Flat module layout — each planner is a self-contained, independently runnable file.
 
-## 🤝 Contributing
-Contributions are welcome! Feel free to:
-* Add new pathfinding algorithms
-* Improve the visualization
-* Fix bugs or optimize performance
-* Add new features or customization options
+---
+
+## Running it
+
+```bash
+pip install pygame numpy torch matplotlib
+python A_star.py
+```
+
+---
+
+## Context
+
+Built to consolidate coursework in **search, graph algorithms, and reinforcement learning** into a single comparable framework rather than a folder of disconnected assignments.
+
+**Author:** Simhadri Mohana Kushal · [LinkedIn](https://www.linkedin.com/in/mohana-kuhsal-simhadri-177205200/) · [GitHub](https://github.com/StonageBanana)
