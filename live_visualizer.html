@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pathfinding Live Visualizer</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, sans-serif; background: #111; color: #eee; margin: 0; padding: 20px; }
+  h1 { font-size: 18px; font-weight: 500; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+  select, button { background: #222; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  button:hover, select:hover { border-color: #777; }
+  button.active { background: #2d6cdf; border-color: #2d6cdf; }
+  label { font-size: 13px; color: #aaa; }
+  #stats { font-size: 13px; color: #ccc; margin-left: auto; white-space: nowrap; }
+  #canvasWrap { border: 1px solid #333; display: inline-block; }
+  canvas { display: block; cursor: crosshair; }
+  .legend { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; color: #999; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>Pathfinding: live, real-time visualizer</h1>
+<div class="bar">
+  <label>Algorithm</label>
+  <select id="algoSelect">
+    <option value="astar">A*</option>
+    <option value="dijkstra">Dijkstra</option>
+    <option value="bfs">BFS</option>
+    <option value="dfs">DFS</option>
+    <option value="greedy">Greedy Best-First</option>
+    <option value="bidirectional">Bidirectional (Dijkstra)</option>
+    <option value="jps">Jump Point Search</option>
+  </select>
+  <button id="genMaze">Random maze</button>
+  <button id="clearWalls">Clear walls</button>
+  <button id="setSourceBtn" class="active">Click: place source</button>
+  <button id="setTargetBtn">Click: place target</button>
+  <label>Speed</label>
+  <input type="range" id="speed" min="1" max="50" value="15">
+  <button id="runBtn">Run</button>
+  <button id="resetRun">Reset run</button>
+  <div id="stats">Click the grid to draw walls. Left panel above sets source/target mode.</div>
+</div>
+<div id="canvasWrap"><canvas id="grid" width="900" height="500"></canvas></div>
+<div class="legend">
+  <span><i class="sw" style="background:#000"></i>wall</span>
+  <span><i class="sw" style="background:#2ecc71"></i>source</span>
+  <span><i class="sw" style="background:#f1c40f"></i>target</span>
+  <span><i class="sw" style="background:#3a3f6b"></i>visited / frontier</span>
+  <span><i class="sw" style="background:#e67e22"></i>current node</span>
+  <span><i class="sw" style="background:#2d6cdf"></i>shortest path</span>
+</div>
+
+<script>
+const COLS = 60, ROWS = 33, CELL = 15;
+const canvas = document.getElementById('grid');
+canvas.width = COLS * CELL; canvas.height = ROWS * CELL;
+const ctx = canvas.getContext('2d');
+
+let grid = []; // 0 = free, 1 = wall
+let source = [2, 2];
+let target = [COLS - 3, ROWS - 3];
+let mode = 'source'; // 'source' | 'target' | 'wall'
+let running = false;
+let timer = null;
+let stepGen = null;
+let visitedOrder = [];
+let currentNode = null;
+let finalPath = null;
+let finalCost = null;
+
+function freshGrid() {
+  grid = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+}
+freshGrid();
+
+function randomMaze() {
+  freshGrid();
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (Math.random() < 0.28) grid[y][x] = 1;
+    }
+  }
+  grid[source[1]][source[0]] = 0;
+  grid[target[1]][target[0]] = 0;
+  resetRunState();
+  draw();
+}
+
+function resetRunState() {
+  running = false;
+  if (timer) { clearInterval(timer); timer = null; }
+  stepGen = null;
+  visitedOrder = [];
+  currentNode = null;
+  finalPath = null;
+  finalCost = null;
+  updateStats('Ready.');
+  draw();
+}
+
+function updateStats(msg) {
+  document.getElementById('stats').textContent = msg;
+}
+
+function draw() {
+  ctx.fillStyle = '#181818';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] === 1) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+      }
+    }
+  }
+
+  ctx.fillStyle = '#3a3f6b';
+  for (const [x, y] of visitedOrder) {
+    ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+  }
+
+  if (finalPath) {
+    ctx.fillStyle = '#2d6cdf';
+    for (const [x, y] of finalPath) {
+      ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+    }
+  }
+
+  if (currentNode) {
+    ctx.fillStyle = '#e67e22';
+    ctx.fillRect(currentNode[0] * CELL, currentNode[1] * CELL, CELL - 1, CELL - 1);
+  }
+
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(source[0] * CELL, source[1] * CELL, CELL - 1, CELL - 1);
+  ctx.fillStyle = '#f1c40f';
+  ctx.fillRect(target[0] * CELL, target[1] * CELL, CELL - 1, CELL - 1);
+
+  ctx.strokeStyle = '#242424';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, ROWS * CELL); ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(COLS * CELL, y * CELL); ctx.stroke();
+  }
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - rect.left) / CELL);
+  const y = Math.floor((e.clientY - rect.top) / CELL);
+  if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return;
+  if (mode === 'source') { source = [x, y]; grid[y][x] = 0; }
+  else if (mode === 'target') { target = [x, y]; grid[y][x] = 0; }
+  else { if (![x,y].every((v,i)=>v===source[i]) && ![x,y].every((v,i)=>v===target[i])) grid[y][x] = grid[y][x] ? 0 : 1; }
+  resetRunState();
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (mode !== 'wall' || e.buttons !== 1) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - rect.left) / CELL);
+  const y = Math.floor((e.clientY - rect.top) / CELL);
+  if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return;
+  if (![x,y].every((v,i)=>v===source[i]) && ![x,y].every((v,i)=>v===target[i])) grid[y][x] = 1;
+  draw();
+});
+
+document.getElementById('setSourceBtn').onclick = (e) => { mode = 'source'; setActive(e.target); };
+document.getElementById('setTargetBtn').onclick = (e) => { mode = 'target'; setActive(e.target); };
+function setActive(btn) {
+  document.querySelectorAll('#setSourceBtn,#setTargetBtn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (btn.id !== 'setSourceBtn' && btn.id !== 'setTargetBtn') return;
+}
+canvas.addEventListener('mousedown', () => { if (mode !== 'source' && mode !== 'target') return; });
+
+document.getElementById('genMaze').onclick = randomMaze;
+document.getElementById('clearWalls').onclick = () => { freshGrid(); resetRunState(); };
+document.getElementById('resetRun').onclick = resetRunState;
+
+canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); mode = 'wall'; document.querySelectorAll('#setSourceBtn,#setTargetBtn').forEach(b=>b.classList.remove('active')); });
+
+const DIRS8 = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+function cost(dx, dy) { return (dx !== 0 && dy !== 0) ? Math.SQRT2 : 1; }
+function walkable(x, y) { return x >= 0 && y >= 0 && x < COLS && y < ROWS && grid[y][x] === 0; }
+function key(p) { return p[0] + ',' + p[1]; }
+function heuristic(a, b) { return Math.hypot(a[0]-b[0], a[1]-b[1]); }
+
+function reconstruct(via, endKey) {
+  const path = [];
+  let k = endKey;
+  while (k !== null) {
+    const [x, y] = k.split(',').map(Number);
+    path.push([x, y]);
+    k = via[k] ?? null;
+  }
+  return path.reverse();
+}
+
+function* bfsGen(src, tgt) {
+  const q = [src]; const visited = new Set([key(src)]); const via = {[key(src)]: null};
+  let qi = 0;
+  while (qi < q.length) {
+    const cur = q[qi++];
+    yield {current: cur};
+    if (key(cur) === key(tgt)) { yield {done: true, path: reconstruct(via, key(cur)), cost: q.length ? undefined : 0, hops: null, final: reconstruct(via, key(cur))}; return; }
+    for (const [dx, dy] of DIRS8) {
+      const nx = cur[0]+dx, ny = cur[1]+dy;
+      if (!walkable(nx, ny) || visited.has(key([nx,ny]))) continue;
+      visited.add(key([nx,ny])); via[key([nx,ny])] = key(cur); q.push([nx, ny]);
+    }
+  }
+  yield {done: true, path: null};
+}
+
+function* dfsGen(src, tgt) {
+  const stack = [src]; const visited = new Set(); const via = {[key(src)]: null};
+  while (stack.length) {
+    const cur = stack.pop();
+    if (visited.has(key(cur))) continue;
+    visited.add(key(cur));
+    yield {current: cur};
+    if (key(cur) === key(tgt)) { yield {done: true, path: reconstruct(via, key(cur))}; return; }
+    for (const [dx, dy] of DIRS8) {
+      const nx = cur[0]+dx, ny = cur[1]+dy;
+      if (!walkable(nx, ny) || visited.has(key([nx,ny]))) continue;
+      if (!(key([nx,ny]) in via)) via[key([nx,ny])] = key(cur);
+      stack.push([nx, ny]);
+    }
+  }
+  yield {done: true, path: null};
+}
+
+function* bestFirstGen(src, tgt, mode) {
+  // mode: 'astar' | 'dijkstra' | 'greedy'
+  const open = [[mode==='dijkstra'?0:heuristic(src,tgt), 0, src]];
+  const gCost = {[key(src)]: 0};
+  const via = {[key(src)]: null};
+  const closed = new Set();
+  while (open.length) {
+    open.sort((a,b)=>a[0]-b[0]);
+    const [, g, cur] = open.shift();
+    if (closed.has(key(cur))) continue;
+    closed.add(key(cur));
+    yield {current: cur};
+    if (key(cur) === key(tgt)) { yield {done: true, path: reconstruct(via, key(cur)), cost: gCost[key(cur)]}; return; }
+    for (const [dx, dy] of DIRS8) {
+      const nx = cur[0]+dx, ny = cur[1]+dy;
+      if (!walkable(nx, ny) || closed.has(key([nx,ny]))) continue;
+      const edge = cost(dx, dy);
+      const newG = g + edge;
+      const nk = key([nx, ny]);
+      if (mode === 'greedy') {
+        if (!(nk in gCost)) {
+          gCost[nk] = newG; via[nk] = key(cur);
+          open.push([heuristic([nx,ny], tgt), newG, [nx, ny]]);
+        }
+      } else {
+        if (!(nk in gCost) || newG < gCost[nk]) {
+          gCost[nk] = newG; via[nk] = key(cur);
+          const h = mode === 'astar' ? heuristic([nx,ny], tgt) : 0;
+          open.push([newG + h, newG, [nx, ny]]);
+        }
+      }
+    }
+  }
+  yield {done: true, path: null};
+}
+
+function* bidirectionalGen(src, tgt) {
+  const distF = {[key(src)]: 0}, distB = {[key(tgt)]: 0};
+  const viaF = {[key(src)]: null}, viaB = {[key(tgt)]: null};
+  const closedF = new Set(), closedB = new Set();
+  let openF = [[0, src]], openB = [[0, tgt]];
+  let mu = Infinity, meet = null;
+
+  function expandSide(open, dist, via, closed, otherDist, otherClosed) {
+    open.sort((a,b)=>a[0]-b[0]);
+    const [d, u] = open.shift();
+    if (closed.has(key(u))) return u;
+    closed.add(key(u));
+    if (otherClosed.has(key(u)) && dist[key(u)] + otherDist[key(u)] < mu) {
+      mu = dist[key(u)] + otherDist[key(u)]; meet = key(u);
+    }
+    for (const [dx, dy] of DIRS8) {
+      const nx = u[0]+dx, ny = u[1]+dy;
+      if (!walkable(nx, ny) || closed.has(key([nx,ny]))) continue;
+      const nk = key([nx, ny]);
+      const newD = dist[key(u)] + cost(dx, dy);
+      if (!(nk in dist) || newD < dist[nk]) {
+        dist[nk] = newD; via[nk] = key(u);
+        open.push([newD, [nx, ny]]);
+        if (otherClosed.has(nk) && newD + otherDist[nk] < mu) { mu = newD + otherDist[nk]; meet = nk; }
+      }
+    }
+    return u;
+  }
+
+  while (openF.length && openB.length) {
+    const topF = openF[0][0];
+    const topB = openB[0][0];
+    if (topF + topB >= mu) break;
+    let cur;
+    if (topF <= topB) cur = expandSide(openF, distF, viaF, closedF, distB, closedB);
+    else cur = expandSide(openB, distB, viaB, closedB, distF, closedF);
+    yield {current: cur};
+  }
+  if (meet === null) { yield {done: true, path: null}; return; }
+  const fwd = reconstruct(viaF, meet);
+  const bwdKeys = []; let k = viaB[meet];
+  while (k !== null) { bwdKeys.push(k.split(',').map(Number)); k = viaB[k]; }
+  yield {done: true, path: fwd.concat(bwdKeys), cost: mu};
+}
+
+function jumpPoint(x, y, dx, dy, tgt) {
+  let nx = x+dx, ny = y+dy;
+  if (!walkable(nx, ny)) return null;
+  if (nx === tgt[0] && ny === tgt[1]) return [nx, ny];
+  if (dx !== 0 && dy !== 0) {
+    if ((walkable(nx-dx, ny+dy) && !walkable(nx-dx, ny)) || (walkable(nx+dx, ny-dy) && !walkable(nx, ny-dy))) return [nx, ny];
+    if (jumpPoint(nx, ny, dx, 0, tgt) || jumpPoint(nx, ny, 0, dy, tgt)) return [nx, ny];
+  } else if (dx !== 0) {
+    if ((walkable(nx+dx, ny+1) && !walkable(nx, ny+1)) || (walkable(nx+dx, ny-1) && !walkable(nx, ny-1))) return [nx, ny];
+  } else {
+    if ((walkable(nx+1, ny+dy) && !walkable(nx+1, ny)) || (walkable(nx-1, ny+dy) && !walkable(nx-1, ny))) return [nx, ny];
+  }
+  return jumpPoint(nx, ny, dx, dy, tgt);
+}
+
+function* jpsGen(src, tgt) {
+  const gCost = {[key(src)]: 0};
+  const via = {[key(src)]: null};
+  const open = [[heuristic(src,tgt), src]];
+  const closed = new Set();
+  while (open.length) {
+    open.sort((a,b)=>a[0]-b[0]);
+    const [, cur] = open.shift();
+    if (closed.has(key(cur))) continue;
+    closed.add(key(cur));
+    yield {current: cur};
+    if (key(cur) === key(tgt)) {
+      const waypoints = reconstruct(via, key(cur));
+      const full = [waypoints[0]];
+      for (let i = 0; i < waypoints.length-1; i++) {
+        const [ax,ay] = waypoints[i], [bx,by] = waypoints[i+1];
+        const steps = Math.max(Math.abs(bx-ax), Math.abs(by-ay));
+        const sx = steps ? (bx-ax)/steps : 0, sy = steps ? (by-ay)/steps : 0;
+        let x = ax, y = ay;
+        for (let s = 0; s < steps; s++) { x += sx; y += sy; full.push([x, y]); }
+      }
+      yield {done: true, path: full, cost: gCost[key(cur)]};
+      return;
+    }
+    for (const [dx, dy] of DIRS8) {
+      const jp = jumpPoint(cur[0], cur[1], dx, dy, tgt);
+      if (!jp || closed.has(key(jp))) continue;
+      const newG = gCost[key(cur)] + Math.hypot(jp[0]-cur[0], jp[1]-cur[1]);
+      const jk = key(jp);
+      if (!(jk in gCost) || newG < gCost[jk]) {
+        gCost[jk] = newG; via[jk] = key(cur);
+        open.push([newG + heuristic(jp, tgt), jp]);
+      }
+    }
+  }
+  yield {done: true, path: null};
+}
+
+function makeGenerator(algo) {
+  const src = source, tgt = target;
+  switch (algo) {
+    case 'bfs': return bfsGen(src, tgt);
+    case 'dfs': return dfsGen(src, tgt);
+    case 'astar': return bestFirstGen(src, tgt, 'astar');
+    case 'dijkstra': return bestFirstGen(src, tgt, 'dijkstra');
+    case 'greedy': return bestFirstGen(src, tgt, 'greedy');
+    case 'bidirectional': return bidirectionalGen(src, tgt);
+    case 'jps': return jpsGen(src, tgt);
+  }
+}
+
+document.getElementById('runBtn').onclick = () => {
+  if (running) { running = false; clearInterval(timer); document.getElementById('runBtn').textContent = 'Run'; return; }
+  resetRunState();
+  const algo = document.getElementById('algoSelect').value;
+  stepGen = makeGenerator(algo);
+  running = true;
+  document.getElementById('runBtn').textContent = 'Pause';
+  const speedVal = document.getElementById('speed').value;
+  const stepsPerTick = Math.max(1, Math.round(speedVal / 3));
+  const start = performance.now();
+  timer = setInterval(() => {
+    for (let i = 0; i < stepsPerTick; i++) {
+      const {value, done} = stepGen.next();
+      if (done) { running = false; clearInterval(timer); document.getElementById('runBtn').textContent = 'Run'; return; }
+      if (value.current) { currentNode = value.current; visitedOrder.push(value.current); }
+      if (value.done) {
+        clearInterval(timer);
+        running = false;
+        document.getElementById('runBtn').textContent = 'Run';
+        currentNode = null;
+        if (value.path) {
+          finalPath = value.path;
+          const elapsed = ((performance.now() - start) / 1000).toFixed(2);
+          const costStr = value.cost !== undefined ? value.cost.toFixed(3) : (finalPath.length - 1);
+          updateStats(`${algo.toUpperCase()} done in ${elapsed}s. Nodes expanded: ${visitedOrder.length}. Path cost: ${costStr}.`);
+        } else {
+          updateStats('No path found between source and target.');
+        }
+        draw();
+        return;
+      }
+    }
+    draw();
+  }, 20);
+};
+
+randomMaze();
+</script>
+</body>
+</html>
